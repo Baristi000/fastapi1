@@ -61,5 +61,3 @@ def set_json():
     c = json.loads(b)
     print(c["key2"])
     return c
-
-uvicorn.run(app, host="0.0.0.0", port= -5000, log_level="info")
