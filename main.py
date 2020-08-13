@@ -2,6 +2,7 @@ from typing import Optional
 from fastapi import FastAPI, Form
 import mysql.connector
 import responses, requests, json
+import uvicorn
 
 app = FastAPI()
 db = mysql.connector.connect(user='trieu', 
@@ -61,3 +62,4 @@ def set_json():
     print(c["key2"])
     return c
 
+uvicorn.run(app, host="0.0.0.0", port= -5000, log_level="info")
