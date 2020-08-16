@@ -312,6 +312,44 @@ async def get_all_shops(token:str):
         ) 
     return JSONResponse(get_all_shop(payload.get("sub")))
 
+@app.post("/admin/new-account/",tags=["admin"])
+async def create_new_account(token:str,email:str,role:str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        roles: str = payload.get("role")
+        if roles!="admin":
+            raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        if check_email(email)==False:
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid email value"
+            )
+        if check_user_db(email)==True:
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid email, email already exist "
+        )
+        if role!="executor" and role!="manager":
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Role must be executor or manager"
+            )
+        password=random_password(8)
+        new_hashed_password=get_password_hash(password)
+        create_new_user(email,new_hashed_password,role,datetime.now().strftime("%m/%d/%Y, %H:%M:%S"))
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {"message":"create success"}
+
+
 @app.get("/executor/",tags=["executor"])
 async def executor_page(token:str):
     try:
@@ -463,44 +501,16 @@ async def update_executor(token:str,shopID:str,executorName:str):
     return {"message":"update success"}
 
 
-@app.post("/admin/new-account/",tags=["admin"])
-async def create_new_account(token:str,email:str,role:str):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        roles: str = payload.get("role")
-        if roles!="admin":
-            raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized ",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-        if check_email(email)==False:
-            raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid email value"
-            )
-        if check_user_db(email)==True:
-            raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid email, email already exist "
-        )
-        if role!="executor" and role!="manager":
-            raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Role must be executor or manager"
-            )
-        password=random_password(8)
-        new_hashed_password=get_password_hash(password)
-        create_new_user(email,new_hashed_password,role,datetime.now().strftime("%m/%d/%Y, %H:%M:%S"))
-    except (JWTError, ValidationError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized ",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return {"message":"create success"}
 
 @app.get("/status/")
 async def read_system_status(current_user: User = Depends(get_current_user)):
     return {"status": "ok"}
 
+@app.post("/manual/new-account/",tags=["manual"])
+async def create_new_account(email:str,role:str,password:str):
+    new_hashed_password=get_password_hash(password)
+    create_new_user(email,new_hashed_password,role,datetime.now().strftime("%m/%d/%Y, %H:%M:%S"))
+    q = "INSERT INTO user(email, password, role) VALUES('"+email+"', '"+new_hashed_password+"', '"+role+"');"
+    cursor.execute(q)
+    cnx.commit()
+    return {"message":"create success"}
