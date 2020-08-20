@@ -1,123 +1,208 @@
-#working
-from typing import Optional
-import mysql.connector
-import responses, requests, json
-#authen
-from datetime import datetime, timedelta
-from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, status, Form
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+
+from datetime import datetime, timedelta
+from typing import List, Optional
+import random
+from fastapi import Depends, FastAPI, HTTPException, Security, status
+from fastapi.responses import JSONResponse
+from fastapi.security import (
+    OAuth2PasswordBearer,
+    OAuth2PasswordRequestForm,
+    SecurityScopes,
+)
+import json
+import string
+import requests
+import re
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
-
-
-app = FastAPI()
-db = mysql.connector.connect(user='trieu', 
-                     password='T123',
-                     host='localhost',
-                     database='trieudb')
-
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
-
-
-@app.get("/items/{id}")
-def read_item(id: int, q: Optional[str] = None):
-    return {"id": id, "q": id+1}
-
-@app.post("/get-input/")
-async def input1(name: str = Form(...)):
-    q = "INSERT INTO table1 (name) VALUES('"+name+"');"
-    db.cursor().execute(q)
-    db.commit()
-    return {"name": name}
-
-@app.get("/get-data")
-def lelect_id(id : str):
-    q = "SELECT * FROM table1 WHERE ID = "+id+";"
-    db.cursor().execute(q)
-    r = db.cursor().fetchall()
-    x = {id: r[0][0], name:r[0][1]}
-    return x
-
-@app.post("/delete")
-def delete_id(id: str):
-    q = "DELETE FROM table1 WHERE ID = "+id+";"
-    db.cursor().execute(q)
-    r = db.cursor().fetchall()
-    print(r)
-
-@responses.activate
-@app.get("/slack")
-def send_mes(messages: str):
-    slack_url = "https://hooks.slack.com/services/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"
-    payload={"text": messages}
-    data = json.dumps(payload)
-    res = requests.post(slack_url,data,headers={'content-type': 'application/json'},)
-    print(json.loads(data))
-    print(data)
-    return data
-
-@app.get("/get-json")
-def set_json():
-    a = "{\"key1\": \"hahaa\",\"key2\": \"hihii\",\"key3\": \"hohoo\"}"
-    c = json.loads(a)
-    print(c["key2"])
-    return c
-    
-
-
+from pydantic import BaseModel, ValidationError
+import mysql.connector
+from fastapi.middleware.cors import CORSMiddleware
+# to get a string like this run:
+# openssl rand -hex 32
 SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+regex = '^[a-z0-9]+[\._]?[a-z0-9]+[@]\w+[.]\w{2,3}$'
 
-fake_users_db = {
-    "johndoe": {
-        "username": "johndoe",
-        "full_name": "John Doe",
-        "email": "trieu.com",
-        "hashed_password": "$2b$12$XnzNIHFiuU9FSCgXFOFgeO1X5UZLPTlf/7J8K0JWIw8Ev6tsTHsla",
-        "disabled": False,
+cnx = mysql.connector.connect(user='sql12359904', password='Uz363CqZFF',
+                                 host='sql12.freemysqlhosting.net',
+                                 database='sql12359904',port=3306)
+cursor = cnx.cursor()
+
+origins = [
+    "https://tesstapidai.herokuapp.com/",
+    "http://localhost",
+    "http://localhost:3000",
+    "https://demoooo-1.herokuapp.com",
+    "https://demoooo-1.herokuapp.com/login"
+]
+
+
+def check_email(email):  
+  
+    if(re.search(regex,email)):  
+        return True  
+    return False
+
+def get_user_db(username:str):
+    cursor.execute("select *from user where email='"+username+"'")
+
+    myresult = cursor.fetchone()
+    
+    if myresult is None:
+        return None
+    user={
+        "id": myresult[0],
+        "username": myresult[1],
+        "hashed_password": myresult[2],
+        "disabled": myresult[4],
+        "role":myresult[3]
+        }
+    return user
+def get_channel(channelID:str):
+    cursor.execute("select * from channel where id='"+channelID+"'")
+    myresult=cursor.fetchone()
+    if myresult is None:
+        return None
+    return{
+            "id": myresult[0],
+            "name": myresult[1],
+            "url": myresult[2],
+            "manager_id":myresult[3],
+
     }
-}
 
+def get_country_name(country_zip:str):
+    cursor.execute("select name from Country where zip_code='"+country_zip+"'")
+    return cursor.fetchone()[0]
 
+def get_channel_id(manager_id:str):
+    cursor.execute("select * from channel where manager_id='"+str(manager_id)+"'")
+    myresult=cursor.fetchone()
+    return str(myresult[0])
+
+def update_executor_db(username:str,shopID:str):
+    user=get_user_db(username)
+    cursor.execute("update shop set executor_id='"+str(user["id"])+ "' WHERE id="+shopID)
+    cnx.commit()
+    return True
+
+def get_all_shop(username:str):
+
+    user=get_user_db(username)
+
+    if user["role"]=="admin":
+        cursor.execute("select *from shop ")
+    elif user["role"]=="executor":
+        cursor.execute("select *from shop where executor_id='"+str(user["id"])+"'")
+    elif user["role"]=="manager":
+        channel_id=get_channel_id(user["id"])
+        if channel_id is None:
+            return []
+        cursor.execute("select *from shop where channel_id='"+str(channel_id)+"'")
+
+    myresult = cursor.fetchall()
+    all_shop=[]
+    for shop in myresult:
+        all_shop.append({
+            "id": shop[0],
+            "name": shop[1],
+            "url": shop[2],
+            "country": get_country_name(shop[3]),
+            "sim_id": shop[4],
+            "channel_id":shop[6],
+            "executor_id":shop[5]
+        })
+    return all_shop
+
+def get_shop_details(shopID:str):
+    cursor.execute("select * from shop where id='"+str(shopID)+"'")
+    myresult=cursor.fetchone()
+    if myresult is None:
+        return None
+    return{
+            "id": myresult[0],
+            "name": myresult[1],
+            "url": myresult[2],
+            "country": get_country_name(myresult[3]),
+            "sim_id": myresult[4],
+            "channel_id":myresult[6],
+            "executor_id":myresult[5]
+
+    }
+def random_password(length):
+    letters = string.ascii_lowercase
+    result_str = ''.join(random.choice(letters) for i in range(length))
+    return result_str
+ 
 class Token(BaseModel):
     access_token: str
     token_type: str
 
+class Token_body(BaseModel):
+    access_token: str
 
 class TokenData(BaseModel):
     username: Optional[str] = None
+    scopes: List[str] = []
 
+class User_Account(BaseModel):
+    username: str
+    password: str
+
+class NewUser(BaseModel):
+    email: str
+    role: str
 
 class User(BaseModel):
     username: str
-    email: Optional[str] = None
-    full_name: Optional[str] = None
-    disabled: Optional[bool] = None
-
+    disabled: str
 
 class UserInDB(User):
     hashed_password: str
 
-
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="token",
+    scopes={"me": "Read information about the current user.", "items": "Read items."},
+)
 
+app = FastAPI()
 
-#def verify_password(plain_password, hashed_password):
-#    return pwd_context.verify(plain_password, hashed_password)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
 
+def get_password_hash(password):
+    return pwd_context.hash(password)
 
-#def get_password_hash(password):
-#    return pwd_context.hash(password)
+def create_new_user(username:str,hashed_password:str,role:str,create_date:str):
+    cursor.execute("insert into user (email, password,role,create_date,disable) values ('"+username+"','"+hashed_password+"','"+role+"','"+create_date+"',0); ")
+    cnx.commit()
 
+def check_user_db(username:str):
+    cursor.execute("select * from user where email='"+username+"'")
+    results=cursor.fetchone()
+    if results is None:
+        return False
+    return True
 
+def authenticate_user(username: str, password: str):
+    user = get_user_db(username)
+    if user is None:
+        return False
+    if not verify_password(password, user["hashed_password"]):
+        return False
+    return user
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
@@ -129,57 +214,377 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+async def get_current_user(security_scopes: SecurityScopes, token: str = Depends(oauth2_scheme)):
+    if security_scopes.scopes:
+        authenticate_value = f'Bearer scope="{security_scopes.scope_str}"'
+    else:
+        authenticate_value = f"Bearer"
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
+        headers={"WWW-Authenticate": authenticate_value},
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
-        token_data = TokenData(username=username)
-    except JWTError:
+        token_scopes = payload.get("scopes", [])
+        token_data = TokenData(scopes=token_scopes, username=username)
+    except (JWTError, ValidationError):
         raise credentials_exception
-    user = get_user(fake_users_db, username=token_data.username)
+    user = get_user_db(username=token_data.username)
     if user is None:
         raise credentials_exception
+    for scope in security_scopes.scopes:
+        if scope not in token_data.scopes:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Not enough permissions",
+                headers={"WWW-Authenticate": authenticate_value},
+            )
     return user
 
+@app.post("/login/token", response_model=Token,tags=["login"])
+async def login_for_access_token(User_Account : User_Account):
+    try:
+        user=get_user_db(User_Account.username)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username ",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
-async def get_current_active_user(current_user: User = Depends(get_current_user)):
-    if current_user.disabled:
-        raise HTTPException(status_code=400, detail="Inactive user")
-    return current_user
-
-
-@app.post("/token", response_model=Token)
-async def login_for_access_token(username: str = Form(...), password: str = Form(...)):
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
-    if pwd_context.verify(form_data.password, fake_users_db["hashed_password"]) == true:
-        print ("true")
-
-    if not user:
+        if not verify_password(User_Account.password, user["hashed_password"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect  password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token =create_access_token(
+            data={"sub": user["username"],
+            "role":user["role"],
+            "id":user["id"]
+            
+            }, expires_delta=access_token_expires
+        )
+    except (mysql.connector.Error):
         raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="My sql connection error ",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) 
+    return JSONResponse({"access_token": access_token, "token_type": "bearer"})
+
+@app.get("/admin/",tags=["admin"])
+async def admin_page(token:str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        role: str = payload.get("role")
+        if role!="admin":
+            raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Unauthorized ",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return{"message:":"Access admin page success"}
+
+@app.get("/admin/shops",tags=["admin"])
+async def get_all_shops(token:str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        role: str = payload.get("role")
+        if role!="admin":
+            raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except (mysql.connector.Error):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="My sql connection error ",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) 
+    return JSONResponse(get_all_shop(payload.get("sub")))
+
+@app.get("/executor/",tags=["executor"])
+async def executor_page(token:str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        role: str = payload.get("role")
+        if role!="executor":
+            raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return{"message:":"Access executor page success"}
+
+@app.get("/executor/shops",tags=["executor"])
+async def get_all_shops_executor(token:str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        role: str = payload.get("role")
+        if role!="executor":
+            raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except (mysql.connector.Error):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="My sql connection error ",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) 
+    return JSONResponse(get_all_shop(payload.get("sub")))
+
+@app.get("/executor/shops/{shopID}",tags=["executor"])
+async def get_all_shops_executor(token:str,shopID:str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        role: str = payload.get("role")
+        if role!="executor":
+            raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        shop=get_shop_details(shopID)
+        if shop is None:
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid value for shopID",
+            headers={"WWW-Authenticate": "Bearer"},
+            )
+        if str(shop["executor_id"])!=str(payload.get("id")):
+            raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="You can not view this shop details ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except (mysql.connector.Error):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="My sql connection error ",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) 
+    return json.dumps(get_shop_details(shopID))
 
 
-@app.get("/users/me/", response_model=User)
-async def read_users_me(current_user: User = Depends(get_current_active_user)):
-    return current_user
+@app.get("/manager/",tags=["manager"])
+async def manager_page(token:str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        role: str = payload.get("role")
+        if role!="manager":
+            raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        current_channel=get_channel(get_channel_id(payload.get("id")))
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except (mysql.connector.Error):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="My sql connection error ",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) 
+    return{"message:":"Access manager page success"},json.dumps(current_channel)
+
+@app.get("/manager/shops",tags=["manager"])
+async def manager_shops(token:str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        role: str = payload.get("role")
+        if role!="manager":
+            raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        shops= get_all_shop(payload.get("sub"))
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except (mysql.connector.Error):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="My sql connection error ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )   
+    return json.dumps(shops) 
+
+@app.get("/manager/shops/{shopID}",tags=["manager"])
+async def shop_details(token:str,shopID:str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        role: str = payload.get("role")
+        if role!="manager":
+            raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        shop=get_shop_details(shopID)
+        if shop is None:
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid value for shopID",
+            headers={"WWW-Authenticate": "Bearer"},
+            )
+        if str(shop["channel_id"])!=get_channel_id(payload.get("id")):
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This Shop is not belong to your channel",
+            headers={"WWW-Authenticate": "Bearer"},
+            )
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except (mysql.connector.Error):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="My sql connection error ",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) 
+    return json.dumps(get_shop_details(shopID))
+
+@app.post("/manager/shops/{shopID}/executor",tags=["manager"])
+async def update_executor(token:str,shopID:str,executorName:str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        role: str = payload.get("role")
+        if role!="manager":
+            raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        shop=get_shop_details(shopID)
+        if shop is None:
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid value for shopID",
+            headers={"WWW-Authenticate": "Bearer"},
+            )
+        if shop["channel_id"]!=get_channel_id(payload.get("id")):
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This Shop is not belong to your channel",
+            headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        executor=get_user_db(executorName)
+
+        if executor["role"]!="executor":
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid this email is not executor",
+            headers={"WWW-Authenticate": "Bearer"},
+            )
+        update_executor_db(executorName,shopID)
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except (mysql.connector.Error):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="My sql connection error ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )   
+    return {"message":"update success"}
 
 
-@app.get("/users/me/items/")
-async def read_own_items(current_user: User = Depends(get_current_active_user)):
-    return [{"item_id": "Foo", "owner": current_user.username}]
+@app.post("/admin/new-account/",tags=["admin"])
+async def create_new_account(token:str,email:str,role:str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        roles: str = payload.get("role")
+        if roles!="admin":
+            raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        if check_email(email)==False:
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid email value"
+            )
+        if check_user_db(email)==True:
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid email, email already exist "
+        )
+        if role!="executor" and role!="manager":
+            raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Role must be executor or manager"
+            )
+        password=random_password(8)
+        new_hashed_password=get_password_hash(password)
+        create_new_user(email,new_hashed_password,role,datetime.now().strftime("%m/%d/%Y, %H:%M:%S"))
+    except (JWTError, ValidationError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized ",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {"message":"create success"}
+
+@app.get("/status/")
+async def read_system_status(current_user: User = Depends(get_current_user)):
+    return {"status": "ok"}
+
