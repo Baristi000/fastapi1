@@ -1,185 +1,249 @@
-#working
-from typing import Optional
-import mysql.connector
-import responses, requests, json
-#authen
-from datetime import datetime, timedelta
-from typing import Optional
-
-from fastapi import Depends, FastAPI, HTTPException, status, Form
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from pydantic import BaseModel
-
+from typing import List
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, Header 
+from sqlalchemy.orm import Session
+from models import user
+from db.database import SessionLocal, engine
+from api.api_v1.api import api_router
+user.Base.metadata.create_all(bind=engine)
+from fastapi.middleware.cors import CORSMiddleware
+import mysql.connector, responses, requests, json
+import serial, os, time, queue
+from fastapi_utils.tasks import repeat_every
+from threading import Thread
+from concurrent.futures import ThreadPoolExecutor
+from provider import vinaphone, mobifone, viettel, vietnamobile, sim_processing
 
 app = FastAPI()
-db = mysql.connector.connect(user='trieu', 
-                     password='T123',
-                     host='localhost',
-                     database='trieudb')
 
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
-
-
-@app.get("/items/{id}")
-def read_item(id: int, q: Optional[str] = None):
-    return {"id": id, "q": id+1}
-
-@app.post("/get-input/")
-async def input1(name: str = Form(...)):
-    q = "INSERT INTO table1 (name) VALUES('"+name+"');"
-    db.cursor().execute(q)
-    db.commit()
-    return {"name": name}
-
-@app.get("/get-data")
-def lelect_id(id : str):
-    q = "SELECT * FROM table1 WHERE ID = "+id+";"
-    db.cursor().execute(q)
-    r = db.cursor().fetchall()
-    x = {id: r[0][0], name:r[0][1]}
-    return x
-
-@app.post("/delete")
-def delete_id(id: str):
-    q = "DELETE FROM table1 WHERE ID = "+id+";"
-    db.cursor().execute(q)
-    r = db.cursor().fetchall()
-    print(r)
-
-@responses.activate
-@app.get("/slack")
-def send_mes(messages: str):
-    slack_url = "https://hooks.slack.com/services/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"
-    payload={"text": messages}
-    data = json.dumps(payload)
-    res = requests.post(slack_url,data,headers={'content-type': 'application/json'},)
-    print(json.loads(data))
-    print(data)
-    return data
-
-@app.get("/get-json")
-def set_json():
-    a = "{\"key1\": \"hahaa\",\"key2\": \"hihii\",\"key3\": \"hohoo\"}"
-    c = json.loads(a)
-    print(c["key2"])
-    return c
-    
-
-
-SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-fake_users_db = {
-    "johndoe": {
-        "username": "johndoe",
-        "full_name": "John Doe",
-        "email": "trieu.com",
-        "hashed_password": "$2b$12$XnzNIHFiuU9FSCgXFOFgeO1X5UZLPTlf/7J8K0JWIw8Ev6tsTHsla",
-        "disabled": False,
-    }
-}
-
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-
-class TokenData(BaseModel):
-    username: Optional[str] = None
-
-
-class User(BaseModel):
-    username: str
-    email: Optional[str] = None
-    full_name: Optional[str] = None
-    disabled: Optional[bool] = None
-
-
-class UserInDB(User):
-    hashed_password: str
-
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-
-#def verify_password(plain_password, hashed_password):
-#    return pwd_context.verify(plain_password, hashed_password)
-
-
-#def get_password_hash(password):
-#    return pwd_context.hash(password)
-
-
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+@app.middleware("http")
+async def db_session_middleware(request: Request, call_next):
+    response = Response("Internal server error", status_code=500)
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        token_data = TokenData(username=username)
-    except JWTError:
-        raise credentials_exception
-    user = get_user(fake_users_db, username=token_data.username)
-    if user is None:
-        raise credentials_exception
-    return user
+        request.state.db = SessionLocal()
+        response = await call_next(request)
+    finally:
+        request.state.db.close()
+    return response
+
+app.include_router(api_router)
+
+#declare------------------------------------------
+list_port_url = ["tty.SLAB_USBtoUART"]
+sim = sim_processing
+gateway = sim.SLAB_USBtoUAR
+trial = 10
+providers = {"45204":"viettel",
+             "45201":"mobifone",
+             "45202":"vinaphone",
+             "45205":"vietnamobile",
+             "i-tel":"vietnamobile",
+             "45208":"vietnamobile"}
 
 
-async def get_current_active_user(current_user: User = Depends(get_current_user)):
-    if current_user.disabled:
-        raise HTTPException(status_code=400, detail="Inactive user")
-    return current_user
+#class device informaiton
+class Device():
+    data = {}
+    status = {}
 
 
-@app.post("/token", response_model=Token)
-async def login_for_access_token(username: str = Form(...), password: str = Form(...)):
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
-    if pwd_context.verify(form_data.password, fake_users_db["hashed_password"]) == true:
-        print ("true")
+#function------------------------------------------
+#auto+condition
+#open mysql connection
+def connection():
+    cnx = mysql.connector.connect(user='trieu', 
+                                    password='T123',
+                                    host='localhost',
+                                    database='sim_card_management')
+    return cnx
+#execute query 
+def get_info(q):
+    cnx = connection()
+    cursor = cnx.cursor()
+    cursor.execute(q)
+    if q.split()[0].upper()=="SELECT":
+        r = cursor.fetchall();
+        cnx.close()
+        cursor.close()
+        return(r)
+    else:
+        cnx.commit()
+        cnx.close()
+        cursor.close()
+#check ready of thread
+def check_ready(name:str,cThread:list):
+    while True:
+        time.sleep(0.2)
+        if (cThread[0].getName() == name):
+            break
+    return True
+#check provider
+def check_provider(port):
+    while True:
+        str = 'AT+CIMI\r'
+        res = sim.port_write(port, str)
+        if res != []:
+            break
+    res = res[1].decode("utf-8", errors="ignore")[0:5]
+    if providers[res] == "vinaphone":
+        print("vinaphone")
+        return(vinaphone)
+    elif providers[res] == "mobifone":
+        print("mobifone")
+        return(mobifone)
+    elif providers[res] == "viettel":
+        print("viettel")
+        return(viettel)
+    elif providers[res] == "vietnamobile":
+        print("vietnamobile")
+        return(vietnamobile)
+#check sim number
+def check_sim(Device):
+    cnx = connection()
+    cursor = cnx.cursor()
+    port = Device.status["port"]
+    phone_number = Device.status["provider"].get_num(port,trial)
+    q="select * from sim where sim_number = '"+phone_number+"';"
+    r = get_info(q)
+    if r == []:
+        q = "insert into sim values('tty.SLAB_USBtoUART','"+phone_number+"','none');"
+        cursor.execute(q)
+        cnx.commit()
+        print("not exist")
+    cnx.close()
+    return phone_number
+#check incoming message
+def check_message(Device):
+    print("checking ...")
+    port = Device.status['port']
+    signal = port.readlines()
+    full = 0
+    if len(signal)>0:
+        for element in signal:
+            element = element.decode("utf-8",errors="ignore").rstrip().split(",")
+            if(element[0]=='+CMTI: "SM"'):
+                index = element[1]
+                if int(index)>30:
+                    full = 1
+                print("index: "+index)
+                sim.get_message(Device,index,gateway)
+#open port 
+def open_port(list_port_url):
+    list_Device = []
+    for port_url in list_port_url:
+        cmd = 'ls -al /dev/ | grep '+port_url+' | awk \'{print $10}\''
+        list_path = os.popen(cmd).read()
+        list_path = list_path.rstrip().split('\n')
+        path = "/dev/{}".format(list_path[0])
+        port = serial.Serial(path, 9600, timeout=3)
+        Device.status["port"] = port
+        Device.status["provider"] = check_provider(port)
+        Device.status["cThread"] = []
+        Device.data["phone_number"] = check_sim(Device)
+        print("phone number: "+Device.data["phone_number"])
+        list_Device.append(Device)
+    return(list_Device)
+#check mass
+def checkmass():
+    for Device in list_Device:
+        q = queue.Queue()
+        t = Thread(target= lambda queue,arg : queue.put(check_message(arg)),args=(q,Device,))
+        Device.status["cThread"].append(t)
+        while not(check_ready(t.getName(),Device.status["cThread"])):
+            pass
+        t.start()
+        t.join()
+        Device.status["cThread"].pop(0)
 
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+#manual
+#get*101#
+def single_check_balance(Device,trial:int):
+    r = ""
+    while True:
+        q = queue.Queue()
+        t = Thread(target= lambda queue,Device,trial : queue.put(Device.status["provider"].balance(Device, trial)),args=(q,Device,trial,))
+        Device.status["cThread"].append(t)
+        while not(check_ready(t.getName(),Device.status["cThread"])):
+            pass
+        t.start()
+        t.join()
+        Device.status["cThread"].pop(0)
+        r = q.get()
+        if r!="" and r!=None:
+            break
+    return ({Device.data["phone_number"]:r})
+#expired date
+def single_check_expried(Device,trial:int):
+    r = ""
+    while True:
+        q = queue.Queue()
+        t = Thread(target= lambda queue,Device,trial : queue.put(Device.status["provider"].check_expired(Device, trial)),args=(q,Device,trial,))
+        Device.status["cThread"].append(t)
+        while not(check_ready(t.getName(),Device.status["cThread"])):
+            pass
+        t.start()
+        t.join()
+        Device.status["cThread"].pop(0)
+        r = q.get()
+        if r!="" and r!=None:
+            break
+    return ({Device.data["phone_number"]:r})
+
+list_Device = open_port(list_port_url)
+
+#API
+@app.on_event("startup")
+@repeat_every(seconds=10) # 10 seconds 
+def e():
+    Thread(target=checkmass).start()
 
 
-@app.get("/users/me/", response_model=User)
-async def read_users_me(current_user: User = Depends(get_current_active_user)):
-    return current_user
-
-
-@app.get("/users/me/items/")
-async def read_own_items(current_user: User = Depends(get_current_active_user)):
-    return [{"item_id": "Foo", "owner": current_user.username}]
+#check wallet
+@app.get("/balance-{phone}",tags=["sim"])
+def e(phone: str = Header(None)):
+    for Device in list_Device:
+       if phone == Device.data["phone_number"]:
+            return ({"balance":single_check_balance(Device,trial)})
+#check all wallet
+@app.get("/balance_all",tags=["sim"])
+def e():
+    arr = {}
+    thread_list = []
+    exe = ThreadPoolExecutor()
+    for Device in list_Device:
+        t = exe.submit(single_check_balance,Device,trial)
+        thread_list.append(t)
+    for t in thread_list:
+        arr.update(t.result())
+    return ({"balance":arr})
+#check expired date:
+@app.get("/expired-date-{phone}",tags=["sim"])
+def e(phone: str = Header(None)):
+   for Device in list_Device:
+       if phone == Device.data["phone_number"]:
+            return ({"expired_date":single_check_expried(Device,trial)})
+#check expired date of all sim
+@app.get("/expired_date_all",tags=["sim"])
+def e():
+    arr = {}
+    thread_list = []
+    exe = ThreadPoolExecutor()
+    for Device in list_Device:
+        t = exe.submit(single_check_expried,Device,trial)
+        thread_list.append(t)
+    for t in thread_list:
+        arr.update(t.result())
+    return ({"expired_date":arr})
+#push money into sim using code
+@app.get("/push-money",tags=["sim"])
+def e(code: str = Header(None), phone: str = Header(None),tags=["Sim"]):
+    for Device in list_Device:
+        if Device.data["phone_number"] == phone:
+            return(Device.status["provider"].recharge(Device.status["port"],code))
+#push money into sim using bank
